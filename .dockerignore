@@ -1,0 +1,23 @@
+# Secrets — never copy into the image
+.env
+*.env
+!.env.example
+
+# Python caches / envs
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# VCS / IDE / OS
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Docs assets not needed at runtime
+docs/screenshots/

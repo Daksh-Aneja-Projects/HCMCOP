@@ -1,0 +1,17 @@
+services:
+  hcm-autopilot:
+    build: .
+    image: hcm-autopilot:latest
+    container_name: hcm-autopilot
+    ports:
+      - "8501:8501"
+    # Loads QWEN_CLOUD_API_KEY (and any overrides) from your local .env file.
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8501/_stcore/health').status==200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
