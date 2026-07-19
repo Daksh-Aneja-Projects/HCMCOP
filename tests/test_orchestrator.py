@@ -79,9 +79,9 @@ PARSED_AMBIGUOUS = {
 }
 
 
-def _parse_response(parsed: dict):
-    """Fake response for the parse tool's own LLM call (returns JSON content)."""
-    return _Response(_Message(content=json.dumps(parsed)))
+def _parse_json(parsed: dict) -> str:
+    """Fake return for the parser's structured_completion call (a JSON string)."""
+    return json.dumps(parsed)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ def test_full_pipeline_pauses_at_approval_then_completes():
     ]
 
     with patch("src.agent.orchestrator.chat_completion", side_effect=orch_turns), \
-         patch("src.tools.parse_request.chat_completion", return_value=_parse_response(PARSED_COMPLETE)):
+         patch("src.tools.parse_request.structured_completion", return_value=_parse_json(PARSED_COMPLETE)):
         orch = Orchestrator(today="2026-07-19")
         state = orch.start("Hire a senior backend dev in Bangalore, start Aug 15, Engineering.")
 
@@ -147,7 +147,7 @@ def test_ambiguous_request_asks_for_clarification():
         _text_msg("Could you tell me the seniority level and the location for this role?"),
     ]
     with patch("src.agent.orchestrator.chat_completion", side_effect=orch_turns), \
-         patch("src.tools.parse_request.chat_completion", return_value=_parse_response(PARSED_AMBIGUOUS)):
+         patch("src.tools.parse_request.structured_completion", return_value=_parse_json(PARSED_AMBIGUOUS)):
         orch = Orchestrator(today="2026-07-19")
         state = orch.start("We need someone for the backend team")
 
@@ -179,7 +179,7 @@ def test_revise_flow_reruns_ctc_with_cap():
         _text_msg("Revised and ready."),
     ]
     with patch("src.agent.orchestrator.chat_completion", side_effect=orch_turns), \
-         patch("src.tools.parse_request.chat_completion", return_value=_parse_response(PARSED_COMPLETE)):
+         patch("src.tools.parse_request.structured_completion", return_value=_parse_json(PARSED_COMPLETE)):
         orch = Orchestrator(today="2026-07-19")
         state = orch.start("Hire a senior backend dev in Bangalore.")
         assert state.status == Status.AWAITING_APPROVAL

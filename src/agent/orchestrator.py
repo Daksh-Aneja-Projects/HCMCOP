@@ -33,6 +33,8 @@ from ..tools.ctc_estimator import estimate_ctc_band
 from ..tools.offer_letter import generate_offer_letter
 from ..tools.onboarding import create_onboarding_checklist
 from ..tools.parse_request import parse_hiring_request
+from .critic import review_compliance
+from ..utils.audit import record_approval
 from ..utils.qwen_client import chat_completion
 
 
@@ -51,6 +53,7 @@ PHASES = [
     "Compliance Check",
     "CTC Estimation",
     "Offer Draft",
+    "Compliance Review",
     "Human Approval",
     "Onboarding Checklist",
     "Complete",
@@ -101,8 +104,12 @@ fine). If role and location are both present, proceed through the ENTIRE tool \
 pipeline without asking any questions.
 - Once the critical fields are known, call check_geo_compliance, then \
 estimate_ctc_band, then generate_offer_letter (in that order).
-- Then call flag_for_approval with a concise summary. This PAUSES for a human. \
-Do not call create_onboarding_checklist before approval.
+- Then call review_compliance (the Compliance-Critic agent). If it returns \
+passed=false, address the flagged issues first — e.g. re-run estimate_ctc_band \
+(with max_ctc if CTC is out of band) and generate_offer_letter — then call \
+review_compliance again until it passes.
+- Once the review passes, call flag_for_approval with a concise summary. This \
+PAUSES for a human. Do not call create_onboarding_checklist before approval.
 - After the human APPROVES, call create_onboarding_checklist, then give a short \
 final confirmation message.
 - If the human asks to REVISE (e.g. "cap CTC at 30L"), re-run the affected \
@@ -193,8 +200,24 @@ def _tool_specs() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "review_compliance",
+                "description": "Run the Compliance-Critic agent: an independent reviewer that audits the drafted offer against statutory compliance facts and the CTC band. Call this AFTER generate_offer_letter and BEFORE flag_for_approval. If it returns passed=false, fix the flagged issues (e.g. re-run estimate_ctc_band / generate_offer_letter) before proceeding to the human gate.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "focus": {
+                            "type": "string",
+                            "description": "Optional area to scrutinise (e.g. 'CTC', 'right to work').",
+                        }
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "flag_for_approval",
-                "description": "Human-in-the-loop checkpoint. Pauses the workflow and presents a summary for explicit human approval before the final package is generated. Call after the offer letter is drafted.",
+                "description": "Human-in-the-loop checkpoint. Pauses the workflow and presents a summary for explicit human approval before the final package is generated. Call after the compliance review passes.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -222,7 +245,8 @@ _TOOL_PHASE = {
     "parse_hiring_request": "Compliance Check",
     "check_geo_compliance": "CTC Estimation",
     "estimate_ctc_band": "Offer Draft",
-    "generate_offer_letter": "Human Approval",
+    "generate_offer_letter": "Compliance Review",
+    "review_compliance": "Human Approval",
     "create_onboarding_checklist": "Complete",
 }
 
@@ -258,16 +282,30 @@ class Orchestrator:
         self.messages.append({"role": "user", "content": text})
         return self._run()
 
-    def submit_approval(self, decision: str, notes: str = "") -> AgentState:
+    def submit_approval(
+        self, decision: str, notes: str = "",
+        reviewer: str | None = None, session_id: str | None = None,
+    ) -> AgentState:
         """Resume after the human-in-the-loop checkpoint.
 
         Args:
             decision: "approved" or "revise".
             notes: revision notes when decision == "revise".
+            reviewer: identity of the approver (recorded in the audit trail).
+            session_id: session identifier for the audit trail.
         """
         if self._pending_approval_call_id is None:
             # Nothing was waiting; ignore defensively.
             return self.state
+
+        # Immutable audit record of who decided what, and when.
+        record_approval(
+            session_id=session_id or "session",
+            reviewer=reviewer,
+            decision=decision,
+            notes=notes,
+            summary=self.state.approval_summary or {},
+        )
 
         if decision == "approved":
             self._approved = True
@@ -408,6 +446,15 @@ class Orchestrator:
                 reporting_to=args.get("reporting_to"),
             )
 
+        if name == "review_compliance":
+            return review_compliance(
+                parsed_request=parsed,
+                compliance=self.state.artifacts.get("compliance", {}),
+                ctc=self.state.artifacts.get("ctc", {}),
+                offer=self.state.artifacts.get("offer_letter", {}),
+                focus=args.get("focus"),
+            )
+
         if name == "create_onboarding_checklist":
             return create_onboarding_checklist(
                 parsed_request=parsed,
@@ -423,6 +470,7 @@ class Orchestrator:
             "check_geo_compliance": "compliance",
             "estimate_ctc_band": "ctc",
             "generate_offer_letter": "offer_letter",
+            "review_compliance": "compliance_review",
             "create_onboarding_checklist": "checklist",
         }.get(name)
         if key:
@@ -445,6 +493,13 @@ class Orchestrator:
             "offer_key_terms": offer.get("key_terms"),
             "compliance_risk_flags": (art.get("compliance") or {}).get("risk_flags", []),
         }
+        review = art.get("compliance_review")
+        if review:
+            summary["compliance_review"] = {
+                "passed": review.get("passed"),
+                "severity": review.get("severity"),
+                "open_issues": len(review.get("issues", [])),
+            }
         if note:
             summary["reviewer_note"] = note
         return summary

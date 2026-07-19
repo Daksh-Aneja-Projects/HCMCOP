@@ -8,6 +8,7 @@ checkpoint. All reasoning flows through Qwen Cloud function calling.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import date
 
 import streamlit as st
@@ -22,7 +23,9 @@ from src.ui.theme import (
     status_html,
     stepper_html,
 )
-from src.utils.qwen_client import is_configured
+from src.utils.audit import recent_events
+from src.utils.oss_client import is_oss_configured, publish_package
+from src.utils.qwen_client import METRICS, is_configured
 
 st.set_page_config(
     page_title="HCM Autopilot Agent",
@@ -40,10 +43,12 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 def _init_state() -> None:
     st.session_state.setdefault("orchestrator", None)
     st.session_state.setdefault("chat", [])
+    st.session_state.setdefault("session_id", uuid.uuid4().hex[:12])
+    st.session_state.setdefault("reviewer", "")
 
 
 def _reset() -> None:
-    for key in ("orchestrator", "chat"):
+    for key in ("orchestrator", "chat", "session_id"):
         st.session_state.pop(key, None)
     _init_state()
 
@@ -73,7 +78,25 @@ def _render_sidebar(active_phase: str) -> None:
         else:
             _html(status_html(False, "API key missing — set .env"))
 
-        st.write("")
+        # Reviewer identity for the human-in-the-loop audit trail.
+        st.session_state.reviewer = st.text_input(
+            "Reviewer (for audit trail)",
+            value=st.session_state.get("reviewer", ""),
+            placeholder="you@company.com",
+        )
+
+        # Live observability: tokens / cost / latency across Qwen Cloud calls.
+        m = METRICS.summary()
+        if m["calls"]:
+            _html('<hr class="hcm-sep"/>')
+            _html('<div class="hcm-side-title">Session metrics</div>')
+            c1, c2 = st.columns(2)
+            c1.metric("Qwen calls", m["calls"])
+            c2.metric("Tokens", f"{m['total_tokens']:,}")
+            c1.metric("Latency", f"{m['total_latency_ms']/1000:.1f}s")
+            c2.metric("Est. cost", f"${m['est_cost_usd']:.4f}")
+
+        _html('<hr class="hcm-sep"/>')
         if st.button("Start new request", use_container_width=True):
             _reset()
             st.rerun()
@@ -156,16 +179,55 @@ def _render_artifacts(orch: Orchestrator) -> None:
         with st.container(border=True):
             st.markdown(offer.get("letter_content", ""))
 
+    if "compliance_review" in art:
+        rev = art["compliance_review"]
+        passed = rev.get("passed", True)
+        sev = rev.get("severity", "none")
+        tone = "good" if passed else "warn"
+        _html(card_head("shield", "Compliance-Critic review",
+                        f"verdict: {'PASSED' if passed else 'ISSUES'} · severity {sev}",
+                        tone=tone))
+        if passed and not rev.get("issues"):
+            _html(f'<span class="hcm-pill good">{icon("check",13)} No compliance issues found</span>')
+        for it in rev.get("issues", []):
+            _html(
+                f'<span class="hcm-pill warn">{icon("alert",13)} {it.get("issue","")}</span>'
+            )
+        if rev.get("issues") or rev.get("recommendations"):
+            with st.expander("Critic findings", expanded=not passed):
+                st.json(rev)
+
     if "checklist" in art:
         chk = art["checklist"]
-        _html(card_head("checklist", "Onboarding checklist",
+        _html(card_head("checklist", "Onboarding checklist & timeline",
                         f"{chk.get('total_tasks', 0)} tasks · critical path "
                         f"{chk.get('critical_path_days', 0)} days", tone="good"))
-        st.dataframe(
-            chk.get("checklist", []),
-            use_container_width=True,
-            hide_index=True,
+        _html(_timeline_html(chk.get("checklist", [])))
+        with st.expander("Checklist table", expanded=False):
+            st.dataframe(chk.get("checklist", []), use_container_width=True, hide_index=True)
+
+
+def _timeline_html(checklist: list[dict]) -> str:
+    """Render the onboarding checklist as a vertical timeline."""
+    owner_tone = {
+        "HR": "#6366f1", "HR Ops": "#8b5cf6", "IT": "#22d3ee", "Payroll": "#34d399",
+        "Hiring Manager": "#fbbf24",
+    }
+    rows = []
+    for t in checklist:
+        color = owner_tone.get(t.get("owner", ""), "#8a95ad")
+        due = t.get("due_date", "")
+        rows.append(
+            '<div class="hcm-step">'
+            '<span class="rail"></span>'
+            f'<span class="hcm-node" style="border-color:{color};color:{color};">'
+            f'<b style="font-size:.62rem;">{t.get("deadline","")}</b></span>'
+            '<div style="display:flex;flex-direction:column;">'
+            f'<span class="lbl" style="color:#e6ebf5;font-weight:600;">{t.get("task","")}</span>'
+            f'<span style="font-size:.72rem;color:{color};">{t.get("owner","")}'
+            + (f' · {due}' if due else "") + "</span></div></div>"
         )
+    return '<div class="hcm-stepper" style="margin:.4rem 0;">' + "".join(rows) + "</div>"
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +266,11 @@ def _render_approval(orch: Orchestrator) -> None:
         if st.button("Approve & generate checklist", type="primary", use_container_width=True):
             _add_chat("user", "Approved — proceed to generate the onboarding checklist.")
             with st.spinner("Generating onboarding package…"):
-                orch.submit_approval("approved")
+                orch.submit_approval(
+                    "approved",
+                    reviewer=st.session_state.get("reviewer") or None,
+                    session_id=st.session_state.get("session_id"),
+                )
             _after_run(orch)
             st.rerun()
     with col_b:
@@ -236,7 +302,7 @@ def _render_download(orch: Orchestrator) -> None:
         "Export the full package — offer letter, compliance summary, CTC breakdown "
         "and onboarding checklist.</p></div>"
     )
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     c1.download_button(
         "Download JSON",
         data=json.dumps(package, indent=2, default=str).encode("utf-8"),
@@ -249,6 +315,25 @@ def _render_download(orch: Orchestrator) -> None:
         file_name="onboarding_package.md", mime="text/markdown",
         use_container_width=True,
     )
+    with c3:
+        if st.button("Publish to Alibaba Cloud OSS", use_container_width=True,
+                     disabled=not is_oss_configured(),
+                     help=None if is_oss_configured()
+                     else "Set ALIBABA_CLOUD_ACCESS_KEY_ID/SECRET and OSS_BUCKET to enable"):
+            res = publish_package(package)
+            if res.get("published"):
+                st.success(f"Published: {res['uri']}")
+            else:
+                st.warning(res.get("reason", "OSS publish failed"))
+
+    # Audit trail for this session (reviewer, decision, timestamp).
+    events = recent_events(limit=20, session_id=st.session_state.get("session_id"))
+    if events:
+        with st.expander("Audit trail", expanded=False):
+            st.dataframe(
+                [{"time": e["ts"], "event": e["event_type"], "actor": e["actor"]} for e in events],
+                use_container_width=True, hide_index=True,
+            )
 
 
 def _package_to_markdown(package: dict) -> str:

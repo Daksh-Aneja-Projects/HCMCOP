@@ -25,6 +25,10 @@ htmlcov/
 # Streamlit
 .streamlit/secrets.toml
 
+# Local data / audit trail
+data/
+*.db
+
 # IDE / OS
 .vscode/
 .idea/

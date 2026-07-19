@@ -11,7 +11,31 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..utils.qwen_client import chat_completion
+from pydantic import BaseModel, ValidationError
+
+from ..utils.qwen_client import structured_completion
+
+
+class _Location(BaseModel):
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+
+
+class ParsedRequest(BaseModel):
+    """Pydantic schema enforcing the parser's structured output shape."""
+
+    role: str | None = None
+    level: str | None = None
+    department: str | None = None
+    location: _Location | None = None
+    start_date: str | None = None
+    employment_type: str = "Full-time"
+    missing_fields: list[str] = []
+    assumptions_made: list[str] = []
+    confidence: float = 0.5
+
+    model_config = {"extra": "ignore"}
 
 # Fields we consider critical. If any are missing, the orchestrator should ask
 # the user for clarification instead of fabricating a value.
@@ -65,12 +89,20 @@ def parse_hiring_request(raw_request: str, today: str | None = None) -> dict[str
         {"role": "user", "content": user_content},
     ]
 
-    response = chat_completion(messages=messages, temperature=0.1)
-
-    content = response.choices[0].message.content or "{}"
-    parsed = _safe_json(content)
+    # Real JSON-mode structured output (DashScope json_object). The helper
+    # guarantees the "json" keyword the API requires and falls back gracefully.
+    content = structured_completion(messages=messages, temperature=0.1)
+    parsed = _validate_parsed(_safe_json(content))
 
     return _normalize_parsed(parsed)
+
+
+def _validate_parsed(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Coerce raw model JSON through the Pydantic schema; lenient on failure."""
+    try:
+        return ParsedRequest.model_validate(parsed).model_dump()
+    except ValidationError:
+        return parsed
 
 
 def _safe_json(content: str) -> dict[str, Any]:

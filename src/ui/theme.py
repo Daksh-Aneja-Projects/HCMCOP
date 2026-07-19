@@ -54,6 +54,7 @@ PHASE_ICONS = {
     "Compliance Check": "compliance",
     "CTC Estimation": "ctc",
     "Offer Draft": "offer",
+    "Compliance Review": "shield",
     "Human Approval": "approval",
     "Onboarding Checklist": "checklist",
     "Complete": "complete",
