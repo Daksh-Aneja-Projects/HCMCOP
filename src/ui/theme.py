@@ -88,9 +88,12 @@ html,body,[class*="css"]{ font-feature-settings:"cv02","cv03","cv04"; }
     var(--bg);
   color:var(--text);
 }
-/* hide default chrome for a cleaner canvas */
-#MainMenu, footer, header [data-testid="stToolbar"]{ visibility:hidden; }
+/* hide default chrome for a cleaner canvas — remove the whole header bar
+   (Deploy button + menu) so it never overlays or blocks the top of the page */
+header[data-testid="stHeader"]{ display:none !important; }
+#MainMenu, footer{ display:none !important; }
 [data-testid="stDecoration"]{ display:none; }
+[data-testid="stToolbar"]{ display:none !important; }
 
 .block-container{ padding-top:2.2rem; max-width:1120px; }
 

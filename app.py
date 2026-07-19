@@ -26,7 +26,6 @@ from src.ui.theme import (
     card_head,
     hero_html,
     icon,
-    status_html,
     stepper_html,
 )
 from src.utils.audit import recent_events
@@ -97,24 +96,9 @@ def _render_sidebar() -> None:
             orch: Orchestrator | None = st.session_state.orchestrator
             active = orch.state.phase if orch else PHASES[0]
             _html(stepper_html(PHASES, active))
-        _html('<hr class="hcm-sep"/>')
-
-        if is_configured():
-            _html(status_html(True, "Qwen Cloud connected"))
-        else:
-            _html(status_html(False, "API key missing — set .env"))
-
-        # Reviewer identity for the human-in-the-loop audit trail.
-        st.session_state.reviewer = st.text_input(
-            "Reviewer (for audit trail)",
-            value=st.session_state.get("reviewer", ""),
-            placeholder="you@company.com",
-        )
-
         # Live observability: tokens / cost / latency across Qwen Cloud calls.
         m = METRICS.summary()
         if m["calls"]:
-            _html('<hr class="hcm-sep"/>')
             _html('<div class="hcm-side-title">Session metrics</div>')
             c1, c2 = st.columns(2)
             c1.metric("Qwen calls", m["calls"])
@@ -292,10 +276,15 @@ def _render_approval(orch: Orchestrator) -> None:
         with c2:
             _html(f'<div class="hcm-kv"><span class="k">CTC (mid)</span><span class="v">{ctc_val}</span></div>')
             _html(f'<div class="hcm-kv"><span class="k">Start date</span><span class="v">{summary.get("start_date") or "—"}</span></div>')
-        for f in summary.get("compliance_risk_flags", []):
-            _html(f'<span class="hcm-pill warn">{icon("alert",13)} {f}</span>')
+        _html(_pills(summary.get("compliance_risk_flags", []), "warn", "alert"))
 
-    st.write("")
+    # Reviewer identity is captured here (recorded in the audit trail on decision).
+    st.session_state.reviewer = st.text_input(
+        "Your name or email (recorded in the audit trail)",
+        value=st.session_state.get("reviewer", ""),
+        placeholder="you@company.com",
+    )
+
     col_a, col_b = st.columns([1, 1])
     with col_a:
         if st.button("Approve & generate checklist", type="primary", use_container_width=True):
