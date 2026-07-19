@@ -116,12 +116,47 @@ for traceability.
 latency and an estimated USD cost — into a global collector the UI reads for its
 token/cost/latency badges.
 
+## Workforce Integration (M&A) — multi-agent council
+
+Beyond the single-hire pipeline, a second mode handles *macro* requests
+("acquire a 200-person company in Germany, integrate by Q1") with a genuine
+multi-agent council instead of one agent calling tools in sequence:
+
+```mermaid
+flowchart TD
+    REQ["Macro request"] --> ORC["Integration Orchestrator<br/>(decompose + escalate)"]
+    ORC -->|parallel| PA["Policy Agent"]
+    ORC -->|parallel| CA["Compensation Agent"]
+    ORC -->|parallel| MA["Compliance Agent"]
+    PA --> POS["Positions"]
+    CA --> POS
+    MA --> POS
+    POS --> CG["Contradiction graph<br/>(detect_conflicts)"]
+    CG -->|conflicts| HIL["Human-in-the-loop<br/>both positions · risk · options"]
+    HIL -->|resolution| PLAN["Dependency-phased plan<br/>(parallel vs blocked)"]
+```
+
+- **Specialist agents run in parallel** (independent Qwen calls, `ThreadPoolExecutor`)
+  and emit typed *positions* (stance + severity + tags + rationale).
+- **detect_conflicts** builds a contradiction graph: deterministic tag-crossing
+  rules (e.g. `gdpr/data_transfer` × `centralized_hris/us_data`) plus an LLM
+  adjudicator. The signature conflicts surface even offline.
+- Each conflict carries a **risk assessment and resolution options**; the
+  Orchestrator **escalates to the human**, who picks a resolution per conflict.
+- **decompose_phases** produces a dependency-ordered plan where phases are
+  `blocked_by` unresolved conflicts, making the critical path explicit.
+
+The council lives in `src/agent/council.py`; the resumable HITL orchestration in
+`src/agent/integration.py`; the graph renders via `st.graphviz_chart`.
+
 ## Module map
 
 ```
-app.py                           Streamlit UI (intake, phase tracker, expanders, HITL, download)
-src/agent/orchestrator.py        Agent loop, tool schemas, artifact collection, pause/resume
+app.py                           Streamlit UI (two modes, HITL, contradiction graph, download)
+src/agent/orchestrator.py        Hiring agent loop, tool schemas, pause/resume
 src/agent/critic.py              Compliance-Critic sub-agent (review_compliance)
+src/agent/council.py             Multi-agent council: agents, contradiction graph, phases
+src/agent/integration.py         Integration orchestrator (resumable conflict-resolution HITL)
 src/tools/parse_request.py       parse_hiring_request      (LLM + structured output)
 src/tools/compliance.py          check_geo_compliance      (KB + RAG)
 src/tools/ctc_estimator.py       estimate_ctc_band         (salary KB)

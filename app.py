@@ -13,6 +13,12 @@ from datetime import date
 
 import streamlit as st
 
+from src.agent.council import contradiction_graph_dot
+from src.agent.integration import (
+    INTEGRATION_PHASES,
+    IntegrationOrchestrator,
+    IStatus,
+)
 from src.agent.orchestrator import PHASES, Orchestrator, Status
 from src.ui.theme import (
     GLOBAL_CSS,
@@ -42,13 +48,15 @@ st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
 def _init_state() -> None:
     st.session_state.setdefault("orchestrator", None)
+    st.session_state.setdefault("integration", None)
     st.session_state.setdefault("chat", [])
     st.session_state.setdefault("session_id", uuid.uuid4().hex[:12])
     st.session_state.setdefault("reviewer", "")
+    st.session_state.setdefault("mode", "Single Hire")
 
 
 def _reset() -> None:
-    for key in ("orchestrator", "chat", "session_id"):
+    for key in ("orchestrator", "integration", "chat", "session_id"):
         st.session_state.pop(key, None)
     _init_state()
 
@@ -65,12 +73,30 @@ def _html(markup: str) -> None:
 # Sidebar
 # ---------------------------------------------------------------------------
 
-def _render_sidebar(active_phase: str) -> None:
+def _render_sidebar() -> None:
     with st.sidebar:
         _html(brand_html())
         _html('<hr class="hcm-sep"/>')
+
+        # Mode selector — Single Hire vs macro M&A workforce integration.
+        st.session_state.mode = st.radio(
+            "Workflow mode",
+            ["Single Hire", "Workforce Integration (M&A)"],
+            index=0 if st.session_state.get("mode", "Single Hire") == "Single Hire" else 1,
+            label_visibility="collapsed",
+        )
+        integration_mode = st.session_state.mode.startswith("Workforce")
+
+        _html('<hr class="hcm-sep"/>')
         _html('<div class="hcm-side-title">Workflow</div>')
-        _html(stepper_html(PHASES, active_phase))
+        if integration_mode:
+            ig: IntegrationOrchestrator | None = st.session_state.integration
+            active = ig.state.phase if ig else INTEGRATION_PHASES[0]
+            _html(stepper_html(INTEGRATION_PHASES, active))
+        else:
+            orch: Orchestrator | None = st.session_state.orchestrator
+            active = orch.state.phase if orch else PHASES[0]
+            _html(stepper_html(PHASES, active))
         _html('<hr class="hcm-sep"/>')
 
         if is_configured():
@@ -130,81 +156,90 @@ def _render_steps(orch: Orchestrator) -> None:
             st.json(step.result)
 
 
+def _pills(items: list, cls: str = "", ico: str = "sparkle") -> str:
+    """Render a list of strings as inline-flowing pills within one block."""
+    if not items:
+        return ""
+    chips = "".join(
+        f'<span class="hcm-pill {cls}">{icon(ico, 13)} {x}</span>' for x in items
+    )
+    return f'<div class="hcm-pillrow">{chips}</div>'
+
+
 def _render_artifacts(orch: Orchestrator) -> None:
     art = orch.state.artifacts
 
     if "parsed_request" in art:
         parsed = art["parsed_request"]
-        _html(card_head("parse", "Parsed hiring request",
-                        f"confidence {parsed.get('confidence', 0):.0%}"))
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Role", parsed.get("role") or "—")
-        c2.metric("Level", parsed.get("level") or "—")
-        c3.metric("Location", _loc_str(parsed.get("location")))
-        if parsed.get("assumptions_made"):
-            for a in parsed["assumptions_made"]:
-                _html(f'<span class="hcm-pill">{icon("sparkle",13)} {a}</span>')
-        with st.expander("Full parse output", expanded=False):
-            st.json(parsed)
+        with st.container(border=True):
+            _html(card_head("parse", "Parsed hiring request",
+                            f"confidence {parsed.get('confidence', 0):.0%}"))
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Role", parsed.get("role") or "—")
+            c2.metric("Level", parsed.get("level") or "—")
+            c3.metric("Location", _loc_str(parsed.get("location")))
+            _html(_pills(parsed.get("assumptions_made", []), "", "sparkle"))
+            with st.expander("Full parse output", expanded=False):
+                st.json(parsed)
 
     if "compliance" in art:
         comp = art["compliance"]
         geo = comp.get("country", "")
         if comp.get("state"):
             geo += f" · {comp['state']}"
-        _html(card_head("compliance", "Compliance summary", geo, tone="good"))
-        c1, c2 = st.columns(2)
-        c1.metric("Notice period", comp.get("notice_period_norm", "—"))
-        c2.metric("Probation", comp.get("probation_period", "—"))
-        for flag in comp.get("risk_flags", []):
-            _html(f'<span class="hcm-pill warn">{icon("alert",13)} {flag}</span>')
-        with st.expander("Benefits, documents & statutory filings", expanded=False):
-            st.json(comp)
+        with st.container(border=True):
+            _html(card_head("compliance", "Compliance summary", geo, tone="good"))
+            c1, c2 = st.columns(2)
+            c1.metric("Notice period", comp.get("notice_period_norm", "—"))
+            c2.metric("Probation", comp.get("probation_period", "—"))
+            _html(_pills(comp.get("risk_flags", []), "warn", "alert"))
+            with st.expander("Benefits, documents & statutory filings", expanded=False):
+                st.json(comp)
 
     if "ctc" in art:
         ctc = art["ctc"]
         cur = ctc.get("currency", "")
-        _html(card_head("ctc", "CTC band estimate", ctc.get("notes", ""), tone=""))
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Low", f"{cur} {ctc.get('band_low', 0):,}")
-        c2.metric("Mid", f"{cur} {ctc.get('band_mid', 0):,}")
-        c3.metric("High", f"{cur} {ctc.get('band_high', 0):,}")
-        with st.expander("Compensation breakdown", expanded=False):
-            st.json(ctc)
+        with st.container(border=True):
+            _html(card_head("ctc", "CTC band estimate", ctc.get("notes", "")))
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Low", f"{cur} {ctc.get('band_low', 0):,}")
+            c2.metric("Mid", f"{cur} {ctc.get('band_mid', 0):,}")
+            c3.metric("High", f"{cur} {ctc.get('band_high', 0):,}")
+            with st.expander("Compensation breakdown", expanded=False):
+                st.json(ctc)
 
     if "offer_letter" in art:
         offer = art["offer_letter"]
-        _html(card_head("offer", "Offer letter draft",
-                        offer.get("review_reason", ""), tone="warn"))
         with st.container(border=True):
+            _html(card_head("offer", "Offer letter draft",
+                            offer.get("review_reason", ""), tone="warn"))
             st.markdown(offer.get("letter_content", ""))
 
     if "compliance_review" in art:
         rev = art["compliance_review"]
         passed = rev.get("passed", True)
         sev = rev.get("severity", "none")
-        tone = "good" if passed else "warn"
-        _html(card_head("shield", "Compliance-Critic review",
-                        f"verdict: {'PASSED' if passed else 'ISSUES'} · severity {sev}",
-                        tone=tone))
-        if passed and not rev.get("issues"):
-            _html(f'<span class="hcm-pill good">{icon("check",13)} No compliance issues found</span>')
-        for it in rev.get("issues", []):
-            _html(
-                f'<span class="hcm-pill warn">{icon("alert",13)} {it.get("issue","")}</span>'
-            )
-        if rev.get("issues") or rev.get("recommendations"):
-            with st.expander("Critic findings", expanded=not passed):
-                st.json(rev)
+        with st.container(border=True):
+            _html(card_head("shield", "Compliance-Critic review",
+                            f"verdict: {'PASSED' if passed else 'ISSUES'} · severity {sev}",
+                            tone="good" if passed else "warn"))
+            if passed and not rev.get("issues"):
+                _html(_pills(["No compliance issues found"], "good", "check"))
+            else:
+                _html(_pills([it.get("issue", "") for it in rev.get("issues", [])], "warn", "alert"))
+            if rev.get("issues") or rev.get("recommendations"):
+                with st.expander("Critic findings", expanded=not passed):
+                    st.json(rev)
 
     if "checklist" in art:
         chk = art["checklist"]
-        _html(card_head("checklist", "Onboarding checklist & timeline",
-                        f"{chk.get('total_tasks', 0)} tasks · critical path "
-                        f"{chk.get('critical_path_days', 0)} days", tone="good"))
-        _html(_timeline_html(chk.get("checklist", [])))
-        with st.expander("Checklist table", expanded=False):
-            st.dataframe(chk.get("checklist", []), use_container_width=True, hide_index=True)
+        with st.container(border=True):
+            _html(card_head("checklist", "Onboarding checklist & timeline",
+                            f"{chk.get('total_tasks', 0)} tasks · critical path "
+                            f"{chk.get('critical_path_days', 0)} days", tone="good"))
+            _html(_timeline_html(chk.get("checklist", [])))
+            with st.expander("Checklist table", expanded=False):
+                st.dataframe(chk.get("checklist", []), use_container_width=True, hide_index=True)
 
 
 def _timeline_html(checklist: list[dict]) -> str:
@@ -364,10 +399,15 @@ def _package_to_markdown(package: dict) -> str:
 
 def main() -> None:
     _init_state()
-    orch: Orchestrator | None = st.session_state.orchestrator
-    active_phase = orch.state.phase if orch else PHASES[0]
-    _render_sidebar(active_phase)
+    _render_sidebar()
+    if st.session_state.mode.startswith("Workforce"):
+        _run_integration()
+    else:
+        _run_hiring()
 
+
+def _run_hiring() -> None:
+    orch: Orchestrator | None = st.session_state.orchestrator
     _html(hero_html(
         "Autonomous hiring operations",
         "HCM Autopilot Agent",
@@ -379,7 +419,6 @@ def main() -> None:
         with st.chat_message(role):
             st.markdown(content)
 
-    # Intake state
     if orch is None:
         with st.chat_message("assistant"):
             st.markdown(
@@ -429,6 +468,209 @@ def _after_run(orch: Orchestrator) -> None:
     msg = orch.state.assistant_message
     if msg and orch.state.status in (Status.AWAITING_CLARIFICATION, Status.COMPLETE):
         _add_chat("assistant", msg)
+
+
+# ---------------------------------------------------------------------------
+# Workforce Integration (M&A) — multi-agent council with conflict resolution
+# ---------------------------------------------------------------------------
+
+_AGENT_COLOR = {"Policy": "#8b5cf6", "Compensation": "#22d3ee",
+                "Compliance": "#fb7185", "Orchestrator": "#6366f1"}
+_SEV_TONE = {"low": "", "medium": "warn", "high": "warn", "critical": "warn", "none": "good"}
+
+
+def _run_integration() -> None:
+    ig: IntegrationOrchestrator | None = st.session_state.integration
+    _html(hero_html(
+        "Multi-agent workforce integration",
+        "HCM Autopilot · Council",
+        "Specialist agents reason independently, disagree, and resolve conflicts "
+        "visibly — with a human-in-the-loop on every escalation.",
+    ))
+
+    if ig is None:
+        with st.chat_message("assistant"):
+            st.markdown(
+                "Describe a macro workforce-integration task. For example: "
+                "*“We're acquiring a 200-person company in Germany. Integrate their "
+                "workforce by Q1.”*"
+            )
+        prompt = st.chat_input("Describe the integration task…")
+        if prompt:
+            if not is_configured():
+                st.warning("Running offline — the council will use its deterministic "
+                           "domain layer. Add QWEN_CLOUD_API_KEY for full agent reasoning.")
+            ig = IntegrationOrchestrator()
+            st.session_state.integration = ig
+            with st.spinner("Convening the agent council…"):
+                ig.start(prompt)
+            st.rerun()
+        return
+
+    report = ig.state.report
+    if ig.state.status == IStatus.ERROR or report is None:
+        st.error(f"Council error: {ig.state.error}")
+        return
+
+    _render_context(report.context)
+    _render_positions(report.positions)
+    _render_graph(report)
+    _render_conflicts(ig)
+    _render_plan(report)
+
+    if ig.state.status == IStatus.COMPLETE:
+        _render_integration_download(ig)
+
+
+def _render_context(ctx: dict) -> None:
+    with st.container(border=True):
+        _html(card_head("robot", "Integration brief",
+                        "decomposed by the Orchestrator agent"))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Country", ctx.get("country", "—"))
+        c2.metric("Headcount", ctx.get("headcount") or "—")
+        c3.metric("Timeline", ctx.get("timeline", "—"))
+        c4.metric("Agents", "3 + Orchestrator")
+        _html(_pills(ctx.get("parent_policies", []), "", "pin"))
+
+
+def _render_positions(positions: list) -> None:
+    with st.container(border=True):
+        _html(card_head("compliance", "Agent positions",
+                        f"{len(positions)} positions from independent specialists"))
+        by_agent: dict[str, list] = {}
+        for p in positions:
+            by_agent.setdefault(p.agent, []).append(p)
+        cols = st.columns(len(by_agent) or 1)
+        for col, (agent, items) in zip(cols, by_agent.items()):
+            color = _AGENT_COLOR.get(agent, "#5f6b85")
+            with col:
+                cards = "".join(
+                    '<div class="hcm-agentcard">'
+                    f'<div class="a-head"><span class="a-badge" style="background:{color};">'
+                    f'{agent}</span><span class="hcm-pill {_SEV_TONE.get(p.severity,"")}">'
+                    f'{p.stance} · {p.severity}</span></div>'
+                    f'<div class="a-stmt">{p.statement}</div>'
+                    f'<div class="a-why">{p.rationale}</div></div>'
+                    for p in items
+                )
+                _html(cards)
+
+
+def _render_graph(report) -> None:
+    with st.container(border=True):
+        n_conf = len(report.conflicts)
+        resolved = sum(1 for c in report.conflicts if c.resolution)
+        _html(card_head("alert", "Contradiction graph",
+                        f"{n_conf} conflicts · {resolved} resolved",
+                        tone="good" if resolved == n_conf else "warn"))
+        try:
+            st.graphviz_chart(contradiction_graph_dot(report), use_container_width=True)
+        except Exception:
+            st.caption("Graph unavailable in this environment.")
+
+
+def _render_conflicts(ig: IntegrationOrchestrator) -> None:
+    report = ig.state.report
+    open_conflicts = [c for c in report.conflicts if c.resolution is None]
+    if open_conflicts:
+        _html(
+            '<div class="hcm-gate"><div class="g-head">'
+            f'{icon("approval",20)} {len(open_conflicts)} conflict(s) need human resolution'
+            '</div><p style="color:#c9cfe0;margin:.4rem 0 0;font-size:.92rem;">'
+            "The Orchestrator escalated these because the agents cannot both be "
+            "satisfied. Review each and choose a resolution.</p></div>"
+        )
+
+    idx = {p.id: p for p in report.positions}
+    for c in report.conflicts:
+        resolved = c.resolution is not None
+        cls = "hcm-conflict resolved" if resolved else "hcm-conflict"
+        a, b = (idx.get(c.between[0]), idx.get(c.between[1])) if len(c.between) == 2 else (None, None)
+        head = (
+            f'<div class="{cls}"><div class="a-head">'
+            f'<span class="hcm-pill {"good" if resolved else "warn"}">'
+            f'{icon("check",13) if resolved else icon("alert",13)} {c.id} · risk {c.risk}</span>'
+            f'<b style="color:#e6ebf5;">{c.summary}</b></div>'
+        )
+        vs = ""
+        if a and b:
+            vs = (
+                '<div class="hcm-vs">'
+                f'<div class="side"><div class="who" style="color:{_AGENT_COLOR.get(a.agent)};">'
+                f'{a.agent} ({a.id})</div><div class="txt">{a.statement}</div></div>'
+                '<div class="clash">✕</div>'
+                f'<div class="side"><div class="who" style="color:{_AGENT_COLOR.get(b.agent)};">'
+                f'{b.agent} ({b.id})</div><div class="txt">{b.statement}</div></div></div>'
+            )
+        risk = f'<div class="a-why"><b>Risk:</b> {c.risk_assessment}</div></div>'
+        _html(head + vs + risk)
+
+        if resolved:
+            _html(_pills([f"Resolved: {c.resolution}"], "good", "check"))
+        else:
+            labels = [f"{o.id}{' ★' if o.recommended else ''} — {o.option}" for o in c.options]
+            choice = st.radio(
+                f"Resolution for {c.id}", labels, key=f"opt_{c.id}",
+                index=next((i for i, o in enumerate(c.options) if o.recommended), 0),
+            )
+            note = st.text_input("Note (optional)", key=f"note_{c.id}",
+                                 placeholder="rationale for the audit trail")
+            if st.button(f"Resolve {c.id}", key=f"res_{c.id}", type="primary"):
+                opt_id = c.options[labels.index(choice)].id
+                ig.resolve_conflict(c.id, opt_id, note)
+                st.rerun()
+
+
+def _render_plan(report) -> None:
+    with st.container(border=True):
+        blocked = sum(1 for p in report.phases if p.blocked_by)
+        _html(card_head("checklist", "Dependency-phased integration plan",
+                        f"{len(report.phases)} phases · {blocked} currently blocked",
+                        tone="good" if blocked == 0 else "warn"))
+        rows = []
+        for ph in report.phases:
+            state_color = "#fb7185" if ph.blocked_by else ("#22d3ee" if ph.parallelizable else "#8b5cf6")
+            tag = ("blocked by " + ", ".join(ph.blocked_by)) if ph.blocked_by else (
+                "parallel" if ph.parallelizable else "sequential")
+            deps = (" · depends on " + ", ".join(ph.depends_on)) if ph.depends_on else ""
+            rows.append(
+                '<div class="hcm-step"><span class="rail"></span>'
+                f'<span class="hcm-node" style="border-color:{state_color};color:{state_color};">'
+                f'<b style="font-size:.6rem;">{ph.id}</b></span>'
+                '<div style="display:flex;flex-direction:column;">'
+                f'<span class="lbl" style="color:#e6ebf5;font-weight:600;">{ph.name}</span>'
+                f'<span style="font-size:.72rem;color:{state_color};">{ph.window} · {ph.owner} · {tag}{deps}</span>'
+                '</div></div>'
+            )
+        _html('<div class="hcm-stepper" style="margin:.4rem 0;">' + "".join(rows) + "</div>")
+
+
+def _render_integration_download(ig: IntegrationOrchestrator) -> None:
+    package = ig.build_package()
+    _html(
+        '<div class="hcm-gate" style="border-color:rgba(52,211,153,.4);'
+        'background:linear-gradient(180deg,rgba(52,211,153,.10),rgba(52,211,153,.03));">'
+        '<div class="g-head" style="color:#34d399;">'
+        f'{icon("complete",20)} All conflicts resolved — integration plan ready</div>'
+        '<p style="color:#c9cfe0;margin:.4rem 0 0;font-size:.92rem;">'
+        "Export the full council report: positions, contradiction graph, resolutions "
+        "and the dependency-phased plan.</p></div>"
+    )
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "Download council report (JSON)",
+        data=json.dumps(package, indent=2, default=str).encode("utf-8"),
+        file_name="integration_report.json", mime="application/json",
+        use_container_width=True,
+    )
+    with c2:
+        if st.button("Publish to Alibaba Cloud OSS", use_container_width=True,
+                     disabled=not is_oss_configured(),
+                     help=None if is_oss_configured() else "Set OSS_* env vars to enable"):
+            res = publish_package(package)
+            st.success(f"Published: {res['uri']}") if res.get("published") \
+                else st.warning(res.get("reason", "OSS publish failed"))
 
 
 if __name__ == "__main__":

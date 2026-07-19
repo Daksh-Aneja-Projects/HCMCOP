@@ -58,6 +58,12 @@ PHASE_ICONS = {
     "Human Approval": "approval",
     "Onboarding Checklist": "checklist",
     "Complete": "complete",
+    # Workforce-integration (M&A) phases
+    "Council Convened": "robot",
+    "Positions Gathered": "compliance",
+    "Conflicts Detected": "alert",
+    "Human Resolution": "approval",
+    "Integration Plan": "checklist",
 }
 
 
@@ -213,6 +219,36 @@ div[data-testid="stChatInput"] textarea{ background:var(--surface-2) !important;
 .hcm-kv{ display:flex; gap:.5rem; font-size:.9rem; padding:.2rem 0; }
 .hcm-kv .k{ color:var(--muted); min-width:96px; }
 .hcm-kv .v{ color:var(--text); font-weight:600; }
+
+/* inline-flowing pill row (fixes stacked-pill misalignment) */
+.hcm-pillrow{ display:flex; flex-wrap:wrap; gap:.35rem; margin:.5rem 0 .2rem; }
+.hcm-pillrow:empty{ display:none; margin:0; }
+
+/* real bordered cards (st.container(border=True)) — align header + content */
+div[data-testid="stVerticalBlockBorderWrapper"]{
+  border-radius:16px !important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"] > div{ border-radius:16px; }
+.hcm-card-head{ margin-top:.1rem; }
+
+/* agent position card */
+.hcm-agentcard{ border:1px solid var(--border); border-radius:14px; padding:.8rem .95rem;
+  background:linear-gradient(180deg,var(--surface),var(--surface-2)); margin-bottom:.55rem; }
+.hcm-agentcard .a-head{ display:flex; align-items:center; gap:.5rem; margin-bottom:.35rem; }
+.hcm-agentcard .a-badge{ font-size:.7rem; font-weight:750; padding:.2rem .5rem; border-radius:7px; color:#fff; }
+.hcm-agentcard .a-stmt{ font-size:.92rem; color:var(--text); font-weight:550; }
+.hcm-agentcard .a-why{ font-size:.78rem; color:var(--muted); margin-top:.25rem; }
+
+/* conflict card */
+.hcm-conflict{ border:1px solid rgba(251,113,133,.4); border-radius:14px; padding:.9rem 1rem;
+  background:linear-gradient(180deg, rgba(251,113,133,.09), rgba(251,113,133,.02)); margin-bottom:.6rem; }
+.hcm-conflict.resolved{ border-color:rgba(52,211,153,.4);
+  background:linear-gradient(180deg, rgba(52,211,153,.09), rgba(52,211,153,.02)); }
+.hcm-vs{ display:grid; grid-template-columns:1fr auto 1fr; gap:.6rem; align-items:stretch; margin:.5rem 0; }
+.hcm-vs .side{ border:1px solid var(--border); border-radius:10px; padding:.55rem .65rem; background:var(--surface-2); }
+.hcm-vs .side .who{ font-size:.72rem; font-weight:700; margin-bottom:.2rem; }
+.hcm-vs .side .txt{ font-size:.82rem; color:var(--text); }
+.hcm-vs .clash{ display:grid; place-items:center; color:var(--danger); font-weight:800; font-size:.8rem; }
 </style>
 """
 

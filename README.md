@@ -14,7 +14,17 @@ violations, and stops for a human before the offer is committed.
 > **Track 4 — Autopilot Agent.** Handles ambiguous inputs, invokes external
 > tools, and enforces a human-in-the-loop checkpoint at the critical decision.
 
+It runs in two modes:
+- **Single Hire** — the end-to-end hiring → onboarding pipeline.
+- **Workforce Integration (M&A)** — a **multi-agent council** where specialist
+  agents (Policy, Compensation, Compliance) reason independently, **disagree**,
+  and the Orchestrator surfaces each conflict — with both positions, a risk
+  assessment, and resolution options — to a human. *"We're acquiring a 200-person
+  company in Germany. Integrate their workforce by Q1."*
+
 ![HCM Autopilot UI](docs/screenshots/landing.png)
+
+![Multi-agent council with conflict resolution](docs/screenshots/council.png)
 
 ---
 
@@ -24,9 +34,14 @@ violations, and stops for a human before the offer is committed.
   tool calls, **structured `json_object` output** (Pydantic-validated), token
   **streaming with usage**, **`text-embedding-v4`** for RAG, and `qwen-vl-max`
   for multimodal JD parsing. All via the OpenAI SDK against DashScope.
-- **Multi-agent Compliance-Critic** — an independent reviewer agent (its own
-  Qwen call + deterministic guardrails) audits the offer against statutory facts
-  and the CTC band, and can **force an automatic revision** before the human gate.
+- **Multi-agent council with visible conflict resolution** — for macro tasks,
+  Policy / Compensation / Compliance agents run **in parallel**, produce
+  positions, and a **contradiction graph** detects where they clash (e.g. GDPR
+  data-transfer block vs a centralized US HRIS mandate). The Orchestrator
+  escalates each conflict to a human with both sides, risk, and options.
+- **Compliance-Critic** — an independent reviewer agent (its own Qwen call +
+  deterministic guardrails) audits the offer against statutory facts and the CTC
+  band, and can **force an automatic revision** before the human gate.
 - **Genuine human-in-the-loop** — a first-class tool that pauses the workflow,
   threaded on the `tool_call_id`, with reviewer identity captured to an audit trail.
 - **RAG-augmented knowledge** — a `VectorStore` over the compliance KB (Qwen
