@@ -14,12 +14,9 @@ from datetime import date
 import streamlit as st
 
 from src.agent.council import contradiction_graph_dot
-from src.agent.integration import (
-    INTEGRATION_PHASES,
-    IntegrationOrchestrator,
-    IStatus,
-)
-from src.agent.orchestrator import PHASES, Orchestrator, Status
+from src.agent.integration import IntegrationOrchestrator, IStatus
+from src.agent.orchestrator import Orchestrator, Status
+from src.agent.workflows import get_by_label, workflow_labels
 from src.ui.theme import (
     GLOBAL_CSS,
     brand_html,
@@ -77,25 +74,25 @@ def _render_sidebar() -> None:
         _html(brand_html())
         _html('<hr class="hcm-sep"/>')
 
-        # Mode selector — Single Hire vs macro M&A workforce integration.
+        # Mode selector — driven by the workflow registry.
+        labels = workflow_labels()
+        current = st.session_state.get("mode", labels[0])
         st.session_state.mode = st.radio(
-            "Workflow mode",
-            ["Single Hire", "Workforce Integration (M&A)"],
-            index=0 if st.session_state.get("mode", "Single Hire") == "Single Hire" else 1,
+            "Workflow mode", labels,
+            index=labels.index(current) if current in labels else 0,
             label_visibility="collapsed",
         )
-        integration_mode = st.session_state.mode.startswith("Workforce")
+        wf = get_by_label(st.session_state.mode)
 
         _html('<hr class="hcm-sep"/>')
         _html('<div class="hcm-side-title">Workflow</div>')
-        if integration_mode:
+        if wf.key == "ma_integration":
             ig: IntegrationOrchestrator | None = st.session_state.integration
-            active = ig.state.phase if ig else INTEGRATION_PHASES[0]
-            _html(stepper_html(INTEGRATION_PHASES, active))
+            active = ig.state.phase if ig else wf.phases[0]
         else:
             orch: Orchestrator | None = st.session_state.orchestrator
-            active = orch.state.phase if orch else PHASES[0]
-            _html(stepper_html(PHASES, active))
+            active = orch.state.phase if orch else wf.phases[0]
+        _html(stepper_html(wf.phases, active))
         # Live observability: tokens / cost / latency across Qwen Cloud calls.
         m = METRICS.summary()
         if m["calls"]:
@@ -389,20 +386,16 @@ def _package_to_markdown(package: dict) -> str:
 def main() -> None:
     _init_state()
     _render_sidebar()
-    if st.session_state.mode.startswith("Workforce"):
-        _run_integration()
+    wf = get_by_label(st.session_state.mode)
+    if wf.key == "ma_integration":
+        _run_integration(wf)
     else:
-        _run_hiring()
+        _run_hiring(wf)
 
 
-def _run_hiring() -> None:
+def _run_hiring(wf) -> None:
     orch: Orchestrator | None = st.session_state.orchestrator
-    _html(hero_html(
-        "Autonomous hiring operations",
-        "HCM Autopilot Agent",
-        "Turn an ambiguous hiring request into a complete, compliant onboarding "
-        "package — decomposed, reasoned, and executed with a human approval gate.",
-    ))
+    _html(hero_html(wf.hero_eyebrow, wf.hero_title, wf.hero_subtitle))
 
     for role, content in st.session_state.chat:
         with st.chat_message(role):
@@ -410,11 +403,8 @@ def _run_hiring() -> None:
 
     if orch is None:
         with st.chat_message("assistant"):
-            st.markdown(
-                "Describe the role you want to hire — even vaguely. For example: "
-                "*“We need a senior backend dev in Bangalore, starting next month.”*"
-            )
-        prompt = st.chat_input("Enter your hiring request…")
+            st.markdown(wf.intake_hint)
+        prompt = st.chat_input(wf.intake_placeholder)
         if prompt:
             if not is_configured():
                 st.error("QWEN_CLOUD_API_KEY is not set. Add it to your .env first.")
@@ -468,23 +458,14 @@ _AGENT_COLOR = {"Policy": "#8b5cf6", "Compensation": "#22d3ee",
 _SEV_TONE = {"low": "", "medium": "warn", "high": "warn", "critical": "warn", "none": "good"}
 
 
-def _run_integration() -> None:
+def _run_integration(wf) -> None:
     ig: IntegrationOrchestrator | None = st.session_state.integration
-    _html(hero_html(
-        "Multi-agent workforce integration",
-        "HCM Autopilot · Council",
-        "Specialist agents reason independently, disagree, and resolve conflicts "
-        "visibly — with a human-in-the-loop on every escalation.",
-    ))
+    _html(hero_html(wf.hero_eyebrow, wf.hero_title, wf.hero_subtitle))
 
     if ig is None:
         with st.chat_message("assistant"):
-            st.markdown(
-                "Describe a macro workforce-integration task. For example: "
-                "*“We're acquiring a 200-person company in Germany. Integrate their "
-                "workforce by Q1.”*"
-            )
-        prompt = st.chat_input("Describe the integration task…")
+            st.markdown(wf.intake_hint)
+        prompt = st.chat_input(wf.intake_placeholder)
         if prompt:
             if not is_configured():
                 st.warning("Running offline — the council will use its deterministic "
